@@ -1,0 +1,9 @@
+{
+  "queue_length": 16384,
+  "k_neighbors": 10,
+  "n_negatives": 10,
+  "update_interval": 10,
+  "lr": 0.001,
+  "warmup_epochs": 20,
+  "exp_id": "q16384_k10_n10_ui10_lr1e-03_w20"
+}

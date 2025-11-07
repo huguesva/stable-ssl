@@ -46,9 +46,13 @@ def test_module_amp_multiple_optimizers_gpu():
         },
     )
 
-    # Define dummy data loaders
+    # Define dummy data loaders with 2 views (required by simclr_forward)
     train_data = [
-        {"image": torch.randn(128), "label": torch.tensor([0])} for _ in range(4)
+        [
+            {"image": torch.randn(128), "label": torch.tensor([0])},
+            {"image": torch.randn(128), "label": torch.tensor([0])},
+        ]
+        for _ in range(4)
     ]
     train_loader = torch.utils.data.DataLoader(train_data, batch_size=2)
 

@@ -233,11 +233,12 @@ teacher_student_callback = spt.callbacks.TeacherStudentCallback(
 )
 
 linear_probe = spt.callbacks.OnlineProbe(
+    module,
     name="linear_probe",
     input="embedding",
     target="label",
     probe=nn.Linear(192, 100),
-    loss_fn=nn.CrossEntropyLoss(),
+    loss=nn.CrossEntropyLoss(),
     metrics={
         "top1": torchmetrics.classification.MulticlassAccuracy(100),
         "top5": torchmetrics.classification.MulticlassAccuracy(100, top_k=5),

@@ -566,8 +566,6 @@ class PatchMasking(Transform):
             and 128/255.0 for PIL images (mid-gray). Can be set to any float in [0,1] for normalized images.
     """
 
-    _NAMES = ["patch_mask"]
-
     def __init__(
         self,
         patch_size: int = 16,
@@ -575,8 +573,14 @@ class PatchMasking(Transform):
         source: str = "image",
         target: str = "image",
         fill_value: float = None,
+        mask_key: str = "patch_mask",
     ):
         super().__init__()
+        if not 0.0 <= drop_ratio <= 1.0:
+            raise ValueError(f"drop_ratio must be in [0, 1], got {drop_ratio}")
+        if patch_size <= 0:
+            raise ValueError(f"patch_size must be positive, got {patch_size}")
+        self.mask_key = mask_key
         self.patch_size = patch_size
         self.drop_ratio = drop_ratio
         self.source = source
@@ -603,12 +607,11 @@ class PatchMasking(Transform):
         # Determine mask value
         if self.fill_value is not None:
             fill_value = self.fill_value
-        elif isinstance(img, Image.Image):
-            fill_value = 128 / 255.0
-        elif img_tensor.dtype == torch.uint8:
-            fill_value = 128
         else:
             fill_value = 0.0
+        fill_value = torch.tensor(
+            fill_value, dtype=img_tensor.dtype, device=img_tensor.device
+        )
 
         # Vectorized masking: upsample patch mask to full resolution
         # Create full-size mask initialized to True (keep remainder pixels)
@@ -620,20 +623,10 @@ class PatchMasking(Transform):
         ).repeat_interleave(self.patch_size, dim=1)
         full_mask[: upsampled_mask.shape[0], : upsampled_mask.shape[1]] = upsampled_mask
 
-        masked_img = torch.where(
-            full_mask.unsqueeze(0),
-            img_tensor,
-            torch.tensor(fill_value, dtype=img_tensor.dtype, device=img_tensor.device),
-        )
-
-        # Convert back to PIL if needed
-        if isinstance(img, Image.Image):
-            masked_img_out = F.to_pil_image(masked_img)
-        else:
-            masked_img_out = masked_img
+        masked_img_out = torch.where(full_mask, img_tensor, fill_value)
 
         self.nested_set(x, masked_img_out, self.target)
-        x[self._NAMES[0]] = mask
+        self.nested_set(x, mask, self.mask_key)
         return x
 
     @staticmethod
@@ -845,38 +838,38 @@ class MultiViewTransform(v2.Transform):
                    - Dict: Returns a dict of views with the same keys
 
     Returns:
-        Union[List[dict], Dict[str, dict]]:
-            - If transforms is a list: Returns a list of transformed sample dicts
-            - If transforms is a dict: Returns a dict of transformed sample dicts with same keys
+        Dict[str, Union[Dict, List[Dict]]:
+            - If transforms is a list: Returns a dict mapping the key "views" to a list of transformed sample dicts
+            - If transforms is a dict: Returns a dict of transformed sample dicts with the corresponding keys mapping to the samples.
             Each dict contains NEW tensors, not references to the original.
 
     Example:
-        # List input - returns list of views
-        transform = MultiViewTransform([
-            strong_augmentation,  # Creates first view with strong aug
-            weak_augmentation,    # Creates second view with weak aug
-        ])
-        # Input: {"image": img, "label": 0}
-        # Output: [{"image": img_strong, "label": 0}, {"image": img_weak, "label": 0}]
+    # List input - returns dict with key "views" mapping to a list of views
+    transform = MultiViewTransform([
+        strong_augmentation,  # Creates first view with strong aug
+        weak_augmentation,    # Creates second view with weak aug
+    ])
+    # Input: {"image": img, "label": 0}
+    # Output: {"views": [{"image": img_strong, "label": 0}, {"image": img_weak, "label": 0}]}
 
-        # Dict input - returns dict of named views
-        transform = MultiViewTransform({
-            "student": strong_augmentation,
-            "teacher": weak_augmentation,
-        })
-        # Input: {"image": img, "label": 0}
-        # Output: {"student": {"image": img_strong, "label": 0},
-        #          "teacher": {"image": img_weak, "label": 0}}
+    # Dict input - returns dict of named views
+    transform = MultiViewTransform({
+        "student": strong_augmentation,
+        "teacher": weak_augmentation,
+    })
+    # Input: {"image": img, "label": 0}
+    # Output: {"student": {"image": img_strong, "label": 0},
+    #          "teacher": {"image": img_weak, "label": 0}}
     """
 
     def __init__(self, transforms):
         super().__init__()
         self.transforms = transforms
-        self.return_dict = isinstance(transforms, dict)
+        self.is_keys_specified = isinstance(transforms, dict)
 
     def __call__(self, sample):
         """Create multiple views by applying different transforms to the sample."""
-        if self.return_dict:
+        if self.is_keys_specified:
             # Dict input - return dict of views
             views = {}
             for key, transform in self.transforms.items():
@@ -887,13 +880,15 @@ class MultiViewTransform(v2.Transform):
                 views[key] = transformed
         else:
             # List input - return list of views
-            views = []
+            views_list = []
             for transform in self.transforms:
                 # Copy to avoid transforms modifying the original
                 sample_copy = sample.copy()
                 # Apply transform to entire dict
                 transformed = transform(sample_copy)
-                views.append(transformed)
+                views_list.append(transformed)
+
+            views = {"views": views_list}
 
         return views
 
@@ -934,7 +929,7 @@ class ContextTargetsMultiBlockMask(Transform):
         if len(target_scales) != len(target_aspect_ratios):
             raise ValueError(
                 "Each scale must have its associated aspect ratio and vice versa.",
-                "Received {len(target_scales)=} {len(target_aspect_ratios)=}",
+                f"Received {len(target_scales)=} {len(target_aspect_ratios)=}",
             )
 
         self.min_keep = min_keep

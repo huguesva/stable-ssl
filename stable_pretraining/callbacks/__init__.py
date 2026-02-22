@@ -1,4 +1,8 @@
-from .checkpoint_sklearn import SklearnCheckpoint, WandbCheckpoint
+from .checkpoint_sklearn import (
+    SklearnCheckpoint,
+    WandbCheckpoint,
+    StrictCheckpointCallback,
+)
 from .image_retrieval import ImageRetrieval
 from .knn import OnlineKNN
 from .latent_viz import LatentViz
@@ -15,6 +19,9 @@ from .earlystop import EpochMilestones
 from .wd_schedule import WeightDecayUpdater
 from .cleanup import CleanUpCallback
 from .env_info import EnvironmentDumpCallback
+from .cpu_offload import CPUOffloadCallback
+from .registry import ModuleRegistryCallback
+from .unused_parameters import LogUnusedParametersOnce
 
 __all__ = [
     OnlineProbe,
@@ -31,11 +38,15 @@ __all__ = [
     RankMe,
     LiDAR,
     ImageRetrieval,
+    CPUOffloadCallback,
     TeacherStudentCallback,
     CLIPZeroShot,
     EmbeddingCache,
     EpochMilestones,
     WeightDecayUpdater,
     CleanUpCallback,
+    StrictCheckpointCallback,
     EnvironmentDumpCallback,
+    ModuleRegistryCallback,
+    LogUnusedParametersOnce,
 ]

@@ -16,6 +16,7 @@ from .probe import (
     AutoLinearClassifier,
     AutoTuneMLP,
 )
+from .patch_masking import PatchMasking, IJEPAMasking, IJEPAMaskOutput
 from .utils import (
     EvalOnly,
     FeaturesConcat,
@@ -26,6 +27,17 @@ from .utils import (
     vit_hf,
     EfficientMaskedTimmViT,
     register_lr_scale_hook,
+    HiddenStateExtractor,
+)
+from .vit import (
+    MAEDecoder,
+    MaskedEncoder,
+    MaskedEncoderOutput,
+    Attention,
+    CrossAttention,
+    TransformerBlock,
+    FlexibleTransformer,
+    modulate,
 )
 
 from .aggregator import TensorAggregator
@@ -48,6 +60,18 @@ __all__ = [
     EfficientMaskedTimmViT,
     register_lr_scale_hook,
     AutoTuneMLP,
+    HiddenStateExtractor,
+    PatchMasking,
+    MAEDecoder,
+    MaskedEncoder,
+    MaskedEncoderOutput,
+    Attention,
+    CrossAttention,
+    TransformerBlock,
+    FlexibleTransformer,
+    IJEPAMasking,
+    IJEPAMaskOutput,
+    modulate,
 ]
 
 if _MAE_AVAILABLE:

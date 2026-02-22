@@ -10,10 +10,12 @@ from omegaconf import DictConfig
 from tabulate import tabulate
 from pathlib import Path
 from prettytable import PrettyTable
-
+from lightning.pytorch.core.optimizer import LightningOptimizer
 from .optim import create_optimizer, create_scheduler
+from stable_pretraining.utils.error_handling import catch_errors_class
 
 
+@catch_errors_class()
 class Module(pl.LightningModule):
     """PyTorch Lightning module using manual optimization with multi-optimizer support.
 
@@ -190,6 +192,9 @@ class Module(pl.LightningModule):
         )
         return loss / accum
 
+    def after_manual_backward(self):
+        pass
+
     def training_step(self, batch, batch_idx):
         """Manual optimization training step with support for multiple optimizers.
 
@@ -199,6 +204,11 @@ class Module(pl.LightningModule):
         When multiple optimizers are configured, the same loss is used for all of them.
         Each optimizer updates its assigned parameters based on gradients from this joint loss.
         """
+        if type(batch) is not dict:
+            msg = f"batch is expected to be a dict! Not as {type(batch)}"
+            logging.warning(msg)
+            raise ValueError(msg)
+        batch["batch_idx"] = batch_idx
         state = self(batch, stage="fit")
 
         # Resolve optimizers and schedulers (can be single or list)
@@ -215,15 +225,19 @@ class Module(pl.LightningModule):
         elif not isinstance(schedulers, (list, tuple)):
             schedulers = [schedulers]
 
-        if len(optimizers) != len(schedulers):
+        if len(optimizers) > 1 and (len(optimizers) != len(schedulers)):
             raise ValueError(
-                "We need as many schedulers as optimizers!"
+                "When using more than one optimizer,"
+                " we need as many schedulers as optimizers!"
                 "if you don't want to use one, either use a "
                 "ConstantLR, or return None"
             )
+        elif len(optimizers) == 1 and len(schedulers) == 0:
+            schedulers = [None]
 
         # Compute gradients once for the joint loss
         self.manual_backward(state["loss"])
+        self.after_manual_backward()
 
         zero_grad_opts = []
         # Stepping and gradient clipping at accumulation boundary
@@ -241,11 +255,19 @@ class Module(pl.LightningModule):
                     gradient_clip_val=clip_val,
                     gradient_clip_algorithm=clip_algo,
                 )
+
+            if not isinstance(opt, LightningOptimizer):
+                msg = (
+                    "We received an optimizer that is not wrapped"
+                    "by lightning, make sure you define all your optimizers"
+                    f"in the configure_optimizers method! {opt}"
+                )
+                logging.error(msg)
+                raise ValueError(msg)
             opt.step()
             zero_grad_opts.append(opt)
             # Step its scheduler if it exists
             if schedulers[idx] is not None:
-                assert schedulers[idx].optimizer == opt.optimizer
                 schedulers[idx].step()
 
         # zero grad what's needed
@@ -286,7 +308,10 @@ class Module(pl.LightningModule):
                 freq = getattr(self.trainer, "accumulate_grad_batches_", freq)
                 freq = max(int(freq), 1)
                 # config priority
-                freq = self.optim.get("frequency", freq)
+                if hasattr(self, "optim"):
+                    freq = self.optim.get("frequency", freq)
+                else:
+                    freq = 1
                 self._optimizer_frequencies[name] = int(freq)
 
         table = PrettyTable()
@@ -303,12 +328,15 @@ class Module(pl.LightningModule):
         )
 
     def validation_step(self, batch, batch_idx):
+        batch["batch_idx"] = batch_idx
         return self.forward(batch, stage="validate")
 
     def test_step(self, batch, batch_idx):
+        batch["batch_idx"] = batch_idx
         return self.forward(batch, stage="test")
 
     def predict_step(self, batch, batch_idx):
+        batch["batch_idx"] = batch_idx
         return self.forward(batch, stage="predict")
 
     def _get_scheduler_name(self, scheduler_config, scheduler_instance=None):
@@ -375,6 +403,7 @@ class Module(pl.LightningModule):
 
         Returns:
             params_by_name: dict[name, List[nn.Parameter]]
+            named_params_by_name: dict[name, List[Tuple[str, nn.Parameter]]]
             modules_by_name: dict[name, List[str]]
         """
         # Pre-compile regex with stable order from optim_items
@@ -384,6 +413,7 @@ class Module(pl.LightningModule):
 
         # Initialize containers
         params_by_name = {name: [] for name, _ in compiled}
+        named_params_by_name = {name: [] for name, _ in compiled}
         modules_by_name = {name: [] for name, _ in compiled}
 
         # Map module -> group index with inheritance
@@ -415,6 +445,15 @@ class Module(pl.LightningModule):
                 direct_params = list(module.parameters(recurse=False))
                 if direct_params:
                     params_by_name[group_name].extend(direct_params)
+                # Also collect named parameters for exclude_bias_norm support
+                direct_named_params = list(module.named_parameters(recurse=False))
+                if direct_named_params:
+                    # Prefix with module's qualified name
+                    prefixed = [
+                        (f"{qual_name}.{pname}" if qual_name else pname, p)
+                        for pname, p in direct_named_params
+                    ]
+                    named_params_by_name[group_name].extend(prefixed)
 
         # Logging summary
         rows = []
@@ -448,7 +487,7 @@ class Module(pl.LightningModule):
                 "\n" + tabulate(rows, headers=headers, tablefmt="heavy_outline")
             )
 
-        return params_by_name, modules_by_name
+        return params_by_name, named_params_by_name, modules_by_name
 
     def configure_optimizers(self):
         """Configure optimizers and schedulers for manual optimization.
@@ -531,7 +570,9 @@ class Module(pl.LightningModule):
             # Direct parameter extraction - use globally filtered parameters
             params = list(self.parameters(with_callbacks=False))
 
-            opt = create_optimizer(params, optimizer_cfg)
+            # Pass named_params for exclude_bias_norm support
+            named_params = list(self.named_parameters(with_callbacks=False))
+            opt = create_optimizer(params, optimizer_cfg, named_params=named_params)
 
             # Create scheduler
             default = dict(
@@ -567,8 +608,8 @@ class Module(pl.LightningModule):
         )
 
         # Build grouping with detailed logging
-        params_by_name, modules_by_name = self._collect_parameters_by_optimizer_groups(
-            optim_items
+        params_by_name, named_params_by_name, modules_by_name = (
+            self._collect_parameters_by_optimizer_groups(optim_items)
         )
 
         # Build optimizers and schedulers
@@ -582,7 +623,11 @@ class Module(pl.LightningModule):
                 # skip registration when there are no parameters
                 continue
 
-            opt = create_optimizer(params, config["optimizer"])
+            # Pass named_params for exclude_bias_norm support
+            named_params = named_params_by_name.get(name, [])
+            opt = create_optimizer(
+                params, config["optimizer"], named_params=named_params
+            )
             optimizers.append(opt)
 
             sched_config = config.get("scheduler", "CosineAnnealingLR")

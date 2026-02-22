@@ -6,6 +6,10 @@ from loguru import logger as logging
 from tabulate import tabulate
 from lightning.pytorch.loggers import WandbLogger
 
+from typing import Any, Dict
+import lightning.pytorch as pl
+from loguru import logger
+
 from .. import SKLEARN_AVAILABLE
 
 if SKLEARN_AVAILABLE:
@@ -91,6 +95,142 @@ def _get_sklearn_modules(module):
     return modules
 
 
+class StrictCheckpointCallback(Callback):
+    """A PyTorch Lightning callback that controls strict checkpoint loading behavior."""
+
+    def __init__(self, strict: bool = True):
+        super().__init__()
+        self.strict = strict
+        logger.info(f"StrictCheckpointCallback initialized with strict={self.strict}")
+
+    def on_load_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: Dict[str, Any],
+    ) -> None:
+        """Called when loading a checkpoint."""
+        if self.strict:
+            return
+
+        logger.info("=" * 80)
+        logger.info("Processing checkpoint with strict=False")
+        logger.info("=" * 80)
+
+        if "state_dict" not in checkpoint:
+            logger.warning("No 'state_dict' found in checkpoint.")
+            return
+
+        checkpoint_state_dict = checkpoint["state_dict"]
+        model_state_dict = pl_module.state_dict()
+
+        # Track statistics
+        matched_keys = []
+        missing_in_checkpoint = []
+        missing_in_model = []
+        shape_mismatches = []
+
+        # Build the new filtered state dict
+        filtered_state_dict = {}
+
+        # 1. Check all model keys
+        for key in model_state_dict.keys():
+            if key in checkpoint_state_dict:
+                # Key exists in both
+                if checkpoint_state_dict[key].shape == model_state_dict[key].shape:
+                    # Shapes match - use checkpoint value
+                    filtered_state_dict[key] = checkpoint_state_dict[key]
+                    matched_keys.append(key)
+                else:
+                    # Shape mismatch - use model's current value
+                    filtered_state_dict[key] = model_state_dict[key]
+                    shape_mismatches.append(
+                        {
+                            "key": key,
+                            "checkpoint_shape": checkpoint_state_dict[key].shape,
+                            "model_shape": model_state_dict[key].shape,
+                        }
+                    )
+                    logger.warning(
+                        f"❌ Shape mismatch for '{key}': "
+                        f"checkpoint={checkpoint_state_dict[key].shape}, "
+                        f"model={model_state_dict[key].shape} - Using model's current value"
+                    )
+            else:
+                # Key missing in checkpoint - use model's current value
+                filtered_state_dict[key] = model_state_dict[key]
+                missing_in_checkpoint.append(key)
+                logger.warning(
+                    f"⚠️  Parameter missing in checkpoint: '{key}' - Using model's current value"
+                )
+
+        # 2. Check for extra keys in checkpoint
+        for key in checkpoint_state_dict.keys():
+            if key not in model_state_dict:
+                missing_in_model.append(key)
+                logger.warning(
+                    f"⚠️  Parameter in checkpoint but not in model: '{key}' - SKIPPING"
+                )
+
+        # Update checkpoint with filtered state dict
+        checkpoint["state_dict"] = filtered_state_dict
+
+        # Clear optimizer states if there were any mismatches
+        if missing_in_model or shape_mismatches or missing_in_checkpoint:
+            if "optimizer_states" in checkpoint:
+                logger.warning(
+                    "🗑️  Clearing optimizer states due to parameter mismatches."
+                )
+                checkpoint.pop("optimizer_states", None)
+
+            if "lr_schedulers" in checkpoint:
+                logger.warning("🗑️  Clearing learning rate scheduler states.")
+                checkpoint.pop("lr_schedulers", None)
+
+        # Print summary
+        self._print_summary(
+            matched_keys,
+            missing_in_checkpoint,
+            missing_in_model,
+            shape_mismatches,
+            len(model_state_dict),
+        )
+
+    def _print_summary(
+        self,
+        matched_keys,
+        missing_in_checkpoint,
+        missing_in_model,
+        shape_mismatches,
+        total_model_params,
+    ):
+        logger.info("-" * 80)
+        logger.info(f"✅ Successfully matched parameters: {len(matched_keys)}")
+
+        if missing_in_checkpoint:
+            logger.warning(
+                f"⚠️  Parameters missing in checkpoint: {len(missing_in_checkpoint)}"
+            )
+
+        if missing_in_model:
+            logger.warning(
+                f"⚠️  Extra parameters in checkpoint: {len(missing_in_model)}"
+            )
+
+        if shape_mismatches:
+            logger.warning(f"❌ Shape mismatches found: {len(shape_mismatches)}")
+
+        loaded_percentage = (
+            (len(matched_keys) / total_model_params * 100)
+            if total_model_params > 0
+            else 0
+        )
+        logger.info(
+            f"📊 Checkpoint loading coverage: {loaded_percentage:.2f}% ({len(matched_keys)}/{total_model_params})"
+        )
+        logger.info("=" * 80)
+
+
 class WandbCheckpoint(Callback):
     """Callback for saving and loading sklearn models in PyTorch Lightning checkpoints.
 
@@ -143,6 +283,11 @@ class WandbCheckpoint(Callback):
             if wandb.run is None and trainer.global_rank > 0:
                 logging.info(
                     "Run not initialized yet, skipping since this is a slave process!"
+                )
+                return
+            if wandb.run is not None and wandb.run.id == checkpoint["wandb"]["id"]:
+                logging.info(
+                    "Run already property initialized, skipping deletion and setup!"
                 )
                 return
             logging.info(

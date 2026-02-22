@@ -204,8 +204,11 @@ class TestConfigureCheckpointing:
             isinstance(cb, ModelCheckpoint) for cb in manager._trainer.callbacks
         )
 
+
 @pytest.mark.unit
 class TestResumeWeightsOnly:
+    """Tests resume weights_only forwarding behavior in Manager."""
+
     @pytest.mark.parametrize("resume_weights_only", [False, True])
     def test_forward_resume_weights_only_when_supported(
         self,
@@ -247,8 +250,12 @@ class TestResumeWeightsOnly:
 
         monkeypatch.setattr(manager, "init_and_sync_wandb", lambda: None)
         monkeypatch.setattr(manager, "_configure_checkpointing", lambda: None)
-        monkeypatch.setattr("stable_pretraining.manager.print_logger_info", lambda _: None)
-        monkeypatch.setattr("stable_pretraining.manager.print_signal_info", lambda: None)
+        monkeypatch.setattr(
+            "stable_pretraining.manager.print_logger_info", lambda _: None
+        )
+        monkeypatch.setattr(
+            "stable_pretraining.manager.print_signal_info", lambda: None
+        )
 
         manager()
 
@@ -284,8 +291,12 @@ class TestResumeWeightsOnly:
 
         monkeypatch.setattr(manager, "init_and_sync_wandb", lambda: None)
         monkeypatch.setattr(manager, "_configure_checkpointing", lambda: None)
-        monkeypatch.setattr("stable_pretraining.manager.print_logger_info", lambda _: None)
-        monkeypatch.setattr("stable_pretraining.manager.print_signal_info", lambda: None)
+        monkeypatch.setattr(
+            "stable_pretraining.manager.print_logger_info", lambda _: None
+        )
+        monkeypatch.setattr(
+            "stable_pretraining.manager.print_signal_info", lambda: None
+        )
 
         manager()
 
@@ -294,4 +305,3 @@ class TestResumeWeightsOnly:
         assert call_kwargs["datamodule"] is manager.instantiated_data
         assert call_kwargs["ckpt_path"] == str(ckpt_path.resolve())
         assert "weights_only" not in call_kwargs
-
